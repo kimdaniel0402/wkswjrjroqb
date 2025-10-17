@@ -125,14 +125,23 @@
                     </button>
                 </form>
 
+                <!-- 월별 필터링 UI 추가 -->
+                <div class="mb-4 pt-3 border-t">
+                    <label for="month-filter" class="block text-sm font-medium text-gray-700 mb-2">월별 지출 확인</label>
+                    <div class="flex space-x-2">
+                        <select id="year-filter" class="w-1/2 p-2 border border-gray-300 rounded-lg text-sm"></select>
+                        <select id="month-filter" class="w-1/2 p-2 border border-gray-300 rounded-lg text-sm"></select>
+                    </div>
+                </div>
+
                 <!-- 총 합계 -->
                 <div class="mt-6 p-4 bg-indigo-50 rounded-lg shadow-inner">
-                    <div class="text-lg font-bold text-gray-700">총 합계:</div>
+                    <div class="text-lg font-bold text-gray-700">선택 월 총 합계:</div>
                     <div id="total-sum" class="text-3xl font-extrabold text-indigo-700 mt-1">0 원</div>
                 </div>
 
                 <!-- 거래 내역 목록 -->
-                <h3 class="text-xl font-semibold text-gray-700 mt-6 mb-3 border-t pt-3">지출 기록 (클릭 시 삭제)</h3>
+                <h3 class="text-xl font-semibold text-gray-700 mt-6 mb-3 border-t pt-3">지출 기록 (선택 월)</h3>
                 <ul id="general-ledger-list" class="space-y-2 max-h-80 overflow-y-auto scroll-list">
                     <!-- Records will be dynamically inserted here -->
                     <li class="text-center text-sm text-gray-400 py-4">클라우드에서 데이터 로딩 중...</li>
@@ -142,7 +151,7 @@
             <!-- Section 2: 카테고리별 지출 (Category Tracker) - 보고서 역할 -->
             <div class="lg:col-span-2 bg-white p-6 rounded-xl shadow-lg">
                 <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">2. 소비 카테고리별 보고서</h2>
-                <p class="text-sm text-gray-500 mb-4">모든 지출이 카테고리별로 자동 합산되어 실시간으로 표시됩니다.</p>
+                <p class="text-sm text-gray-500 mb-4">선택된 월의 지출이 카테고리별로 자동 합산되어 표시됩니다.</p>
 
                 <div id="category-container" class="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <!-- Category Cards will be dynamically inserted here -->
@@ -155,16 +164,23 @@
     <!-- 렌더링 및 Firebase 동기화 로직 -->
     <script>
         // --- 전역 데이터 및 UI 요소 ---
-        let generalLedger = []; 
+        let allLedgerData = []; // Firebase에서 불러온 전체 데이터
+        let filteredLedger = []; // 현재 필터링된 월의 데이터
+        
         const categoryNames = ['식사', '유흥', '쇼핑', '월정액'];
         const categories = {}; // 카테고리별 집계 데이터
+
+        // UI 요소
         const glList = document.getElementById('general-ledger-list');
         const totalSumDisplay = document.getElementById('total-sum');
         const glForm = document.getElementById('general-ledger-form');
         const categoryContainer = document.getElementById('category-container');
         const submitBtn = document.getElementById('submit-btn');
-        let db; // Firebase db 인스턴스를 저장할 변수
-        let ENTRIES_COLLECTION_PATH; // 컬렉션 경로를 저장할 변수
+        const yearFilter = document.getElementById('year-filter');
+        const monthFilter = document.getElementById('month-filter');
+
+        let db; 
+        let ENTRIES_COLLECTION_PATH; 
 
         // --- 유틸리티 함수 ---
 
@@ -179,20 +195,19 @@
             const { collection, onSnapshot, query, ENTRIES_COLLECTION_PATH: path } = window.moduleExports;
             
             db = firestoreDbInstance;
-            ENTRIES_COLLECTION_PATH = path; // 전역 변수에 할당
+            ENTRIES_COLLECTION_PATH = path; 
             
             const entriesCollectionRef = collection(db, ENTRIES_COLLECTION_PATH);
             
             // 실시간 리스너 설정
             onSnapshot(query(entriesCollectionRef), (snapshot) => {
-                generalLedger = [];
+                allLedgerData = [];
                 snapshot.forEach(doc => {
-                    // Firestore 문서 ID를 기록 데이터에 추가하여 삭제 시 사용
-                    generalLedger.push({ id: doc.id, ...doc.data() });
+                    allLedgerData.push({ id: doc.id, ...doc.data() });
                 });
-                console.log('Data synced from Firestore. Total entries:', generalLedger.length);
+                console.log('Data synced from Firestore. Total entries:', allLedgerData.length);
                 
-                recalculateAndRenderAll();
+                initializeFilters(); // 필터 초기화 및 UI 갱신 시작
                 
                 document.getElementById('sync-status').textContent = '클라우드 동기화 완료';
                 document.getElementById('sync-status').classList.replace('text-yellow-500', 'text-green-500');
@@ -207,15 +222,75 @@
             submitBtn.textContent = '지출 등록 및 동기화';
         };
 
-        // --- 렌더링 및 계산 로직 ---
+        // --- 필터 및 렌더링 로직 ---
 
-        function recalculateAndRenderAll() {
+        function initializeFilters() {
+            // 1. 존재하는 모든 연도와 월 추출
+            const dates = allLedgerData.map(entry => entry.date).filter(date => date);
+            const years = [...new Set(dates.map(date => date.substring(0, 4)))].sort((a, b) => b - a);
+            const today = new Date();
+            let currentYear = today.getFullYear().toString();
+            let currentMonth = (today.getMonth() + 1).toString().padStart(2, '0');
+
+            // 2. 연도 필터 옵션 채우기
+            yearFilter.innerHTML = '';
+            years.forEach(year => {
+                const option = document.createElement('option');
+                option.value = year;
+                option.textContent = `${year}년`;
+                yearFilter.appendChild(option);
+            });
+            
+            // 데이터가 없으면 현재 연도로 필터 설정
+            if (years.length === 0) {
+                 const option = document.createElement('option');
+                 option.value = currentYear;
+                 option.textContent = `${currentYear}년`;
+                 yearFilter.appendChild(option);
+            } else {
+                // 데이터가 있으면 가장 최신 연도로 설정
+                currentYear = years[0];
+            }
+
+            yearFilter.value = currentYear;
+            yearFilter.addEventListener('change', filterAndRender);
+
+            // 3. 월 필터 옵션 채우기 (1월부터 12월)
+            monthFilter.innerHTML = '';
+            for (let i = 1; i <= 12; i++) {
+                const month = i.toString().padStart(2, '0');
+                const option = document.createElement('option');
+                option.value = month;
+                option.textContent = `${i}월`;
+                monthFilter.appendChild(option);
+            }
+            monthFilter.value = currentMonth;
+            monthFilter.addEventListener('change', filterAndRender);
+
+            // 4. 필터링 및 렌더링 시작
+            filterAndRender();
+        }
+
+        function filterAndRender() {
+            const selectedYear = yearFilter.value;
+            const selectedMonth = monthFilter.value;
+
+            // 전체 데이터에서 선택된 연월과 일치하는 데이터만 필터링
+            filteredLedger = allLedgerData.filter(entry => 
+                entry.date.substring(0, 7) === `${selectedYear}-${selectedMonth}`
+            );
+            
+            recalculateAndRenderAll(filteredLedger);
+        }
+
+
+        function recalculateAndRenderAll(data) {
             // 1. 카테고리 데이터 초기화 및 재분류 (Section 2 데이터 준비)
             categoryNames.forEach(name => {
                 categories[name] = [];
             });
 
-            generalLedger.forEach(entry => {
+            data.forEach(entry => {
                 if (categories[entry.category]) {
                     categories[entry.category].push({
                         title: entry.item,
@@ -227,12 +302,12 @@
             });
 
             // 2. 모든 UI 업데이트
-            renderGeneralLedger();
+            renderGeneralLedger(data);
             renderAllCategories();
         }
 
-        function calculateTotalSum() {
-            const total = generalLedger.reduce((sum, entry) => sum + (Number(entry.amount) || 0), 0);
+        function calculateTotalSum(data) {
+            const total = data.reduce((sum, entry) => sum + (Number(entry.amount) || 0), 0);
             totalSumDisplay.textContent = formatCurrency(total);
             return total;
         }
@@ -241,19 +316,19 @@
             return categories[categoryName].reduce((sum, entry) => sum + (Number(entry.amount) || 0), 0);
         }
 
-        function renderGeneralLedger() {
+        function renderGeneralLedger(data) {
             glList.innerHTML = ''; 
 
-            if (generalLedger.length === 0) {
-                glList.innerHTML = '<li class="text-center text-sm text-gray-400 py-4">기록된 지출이 없습니다.</li>';
-                calculateTotalSum();
+            if (data.length === 0) {
+                glList.innerHTML = '<li class="text-center text-sm text-gray-400 py-4">선택하신 월의 기록된 지출이 없습니다.</li>';
+                calculateTotalSum(data);
                 return;
             }
 
             // 날짜 최신순으로 정렬
-            generalLedger.sort((a, b) => new Date(b.date) - new Date(a.date));
+            data.sort((a, b) => new Date(b.date) - new Date(a.date));
 
-            generalLedger.forEach((entry) => {
+            data.forEach((entry) => {
                 const li = document.createElement('li');
                 li.className = 'flex justify-between items-center bg-gray-50 p-3 rounded-lg border border-gray-200 transition duration-150 hover:shadow-md';
                 li.innerHTML = `
@@ -275,7 +350,7 @@
                 `;
                 glList.appendChild(li);
             });
-            calculateTotalSum();
+            calculateTotalSum(data);
 
             // 삭제 버튼 이벤트 리스너 추가 (Firestore 삭제 로직)
             document.querySelectorAll('.delete-btn').forEach(button => {
@@ -283,12 +358,9 @@
                     const docId = e.currentTarget.dataset.id;
                     const { doc, deleteDoc } = window.moduleExports;
 
-                    // 사용자에게 확인 메시지를 보여줄 커스텀 모달 UI를 띄워야 함
-                    // 여기서는 임시로 console.log로 대체 (실제 Canvas 환경 제약)
                     console.log(`[삭제 요청] Firestore 문서 ID: ${docId}를 삭제합니다.`);
 
                     try {
-                        // Firestore에서 문서 삭제
                         // db와 ENTRIES_COLLECTION_PATH는 window.startSync에서 전역 변수로 설정됩니다.
                         await deleteDoc(doc(db, ENTRIES_COLLECTION_PATH, docId)); 
                     } catch (error) {
@@ -349,7 +421,6 @@
             
             if (!date || !category || item === '' || isNaN(amount) || amount <= 0) {
                 console.error('날짜, 항목, 카테고리, 금액을 모두 올바르게 입력해야 합니다.');
-                // 사용자에게 알릴 커스텀 UI가 필요함
                 return;
             }
 
@@ -359,13 +430,11 @@
                 item: item,
                 amount: amount,
                 timestamp: new Date().toISOString(), 
-                // id는 Firestore에서 자동 생성되므로 여기서는 넣지 않음
             };
 
             // Firestore에 새 문서 추가
             const { addDoc, collection } = window.moduleExports;
             try {
-                // db와 ENTRIES_COLLECTION_PATH는 window.startSync에서 전역 변수로 설정됩니다.
                 const docRef = await addDoc(collection(db, ENTRIES_COLLECTION_PATH), newEntry);
                 console.log("Document written with ID: ", docRef.id);
                 
@@ -380,6 +449,8 @@
         // 초기 날짜 설정
         window.onload = () => {
              document.getElementById('gl-date').value = new Date().toISOString().substring(0, 10);
+             // 초기 필터 UI를 먼저 생성하고 데이터가 로드되기를 기다립니다.
+             // initializeFilters()는 startSync 내부에서 데이터 로드 후 호출됩니다.
         };
 
     </script>
