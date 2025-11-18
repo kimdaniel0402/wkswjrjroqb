@@ -21,27 +21,28 @@
              projectId: "joseph-home",
              storageBucket: "joseph-home.firebasestorage.app",
              messagingSenderId: "378047604301",
-             appId: "1:378047604301:web:77c2673ed7a23334691e04",
+             appId: "1:378047604301:web:77c26733ed7a23334691e04",
              measurementId: "G-3VY6X5STKP"
         }; 
         // ----------------------------------------------------------------------
         
-        // Firestore 컬렉션 경로 (수정 불필요)
-        const ENTRIES_COLLECTION_PATH = `ledger_entries`;
-        const CATEGORIES_COLLECTION_PATH = `user_settings`;
-        const CATEGORIES_DOC_PATH = `categories`;
+        // Firestore 컬렉션 경로 (사용자 UID 기반으로 변경됨)
+        const ENTRIES_COLLECTION_NAME = `ledger_entries`;
+        const CATEGORIES_COLLECTION_NAME = `settings`;
+        const CATEGORIES_DOC_NAME = `categories`;
+        const USER_BASE_COLLECTION = `users`; // 최상위 사용자 컬렉션
         const DEFAULT_CATEGORIES = ['식사', '유흥', '쇼핑', '월정액', '기타']; 
 
         // Config 유효성 검사
         if (!firebaseConfig.projectId || !firebaseConfig.apiKey) {
-            console.error("FIREBASE ERROR: firebaseConfig 정보가 누락되었습니다. Config 객체를 채워넣어 주세요.");
+            console.error("FIREBASE ERROR: firebaseConfig 정보가 누락되었습니다.");
         }
 
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
         const auth = getAuth(app);
 
-        window.moduleExports = { getFirestore, collection, onSnapshot, doc, deleteDoc, query, addDoc, setDoc, updateDoc, ENTRIES_COLLECTION_PATH, CATEGORIES_COLLECTION_PATH, CATEGORIES_DOC_PATH };
+        window.moduleExports = { getFirestore, collection, onSnapshot, doc, deleteDoc, query, addDoc, setDoc, updateDoc, USER_BASE_COLLECTION, ENTRIES_COLLECTION_NAME, CATEGORIES_COLLECTION_NAME, CATEGORIES_DOC_NAME };
 
         window.firebaseReady = new Promise(async (resolve) => {
             let userId = 'loading';
@@ -51,6 +52,7 @@
                 return resolve(false);
             }
             try {
+                // 익명 로그인 시도
                 await signInAnonymously(auth); 
                 userId = auth.currentUser?.uid || crypto.randomUUID();
                 
@@ -279,10 +281,11 @@
         const categoryManagementUI = document.getElementById('category-management-ui');
 
         let db; 
-        let ENTRIES_COLLECTION_PATH; 
-        let CATEGORIES_DOC_PATH;
-        let CATEGORIES_COLLECTION_PATH;
-        let currentUserId;
+        const USER_BASE_COLLECTION = `users`; 
+        const ENTRIES_COLLECTION_NAME = `ledger_entries`;
+        const CATEGORIES_COLLECTION_NAME = `settings`;
+        const CATEGORIES_DOC_NAME = `categories`;
+        let currentUserId; // 현재 접속 사용자 UID
 
         // --- 유틸리티 함수 (생략) ---
 
@@ -294,23 +297,24 @@
         // --- Firebase 동기화 로직 ---
 
         window.startSync = (firestoreDbInstance, auth, userId) => {
-            const { collection, onSnapshot, query, doc, setDoc, updateDoc, ENTRIES_COLLECTION_PATH: entriesPath, CATEGORIES_COLLECTION_PATH: settingsPath, CATEGORIES_DOC_PATH: categoriesDoc } = window.moduleExports;
+            const { collection, onSnapshot, query, doc, setDoc, updateDoc } = window.moduleExports;
             
             db = firestoreDbInstance;
-            ENTRIES_COLLECTION_PATH = entriesPath; 
-            CATEGORIES_DOC_PATH = categoriesDoc;
-            CATEGORIES_COLLECTION_PATH = settingsPath;
             currentUserId = userId;
             
-            // 1. 카테고리 목록 실시간 리스너 
-            const userSettingsRef = doc(db, CATEGORIES_COLLECTION_PATH, CATEGORIES_DOC_PATH);
+            // 사용자별 경로 설정
+            const USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
+            const USER_SETTINGS_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${CATEGORIES_COLLECTION_NAME}`;
+            const USER_CATEGORIES_REF = doc(db, USER_SETTINGS_PATH, CATEGORIES_DOC_NAME);
 
-            onSnapshot(userSettingsRef, (docSnap) => {
+            // 1. 카테고리 목록 실시간 리스너 (사용자별)
+            onSnapshot(USER_CATEGORIES_REF, (docSnap) => {
                 if (docSnap.exists() && docSnap.data().names && docSnap.data().names.length > 0) {
                     categoryNames = docSnap.data().names;
                 } else {
+                    // 최초 접속 시 기본 카테고리 생성 (규칙에 userId 필드 추가가 필요함)
                     categoryNames = DEFAULT_CATEGORIES;
-                    setDoc(userSettingsRef, { names: DEFAULT_CATEGORIES }, { merge: true }).catch(e => console.error("Initial category set error:", e));
+                    setDoc(USER_CATEGORIES_REF, { names: DEFAULT_CATEGORIES, userId: currentUserId }, { merge: true }).catch(e => console.error("Initial category set error:", e));
                 }
                 console.log('Categories synced:', categoryNames);
                 renderCategorySelects(); 
@@ -320,8 +324,8 @@
             });
 
 
-            // 2. 지출 내역 실시간 리스너 
-            const entriesCollectionRef = collection(db, ENTRIES_COLLECTION_PATH);
+            // 2. 지출 내역 실시간 리스너 (사용자별)
+            const entriesCollectionRef = collection(db, USER_ENTRIES_PATH);
             
             onSnapshot(query(entriesCollectionRef), (snapshot) => {
                 allLedgerData = [];
@@ -359,11 +363,12 @@
             if (name === "" || categoryNames.includes(name)) return;
 
             const { setDoc, doc } = window.moduleExports;
-            const userSettingsRef = doc(db, CATEGORIES_COLLECTION_PATH, CATEGORIES_DOC_PATH);
+            const USER_SETTINGS_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${CATEGORIES_COLLECTION_NAME}`;
+            const userSettingsRef = doc(db, USER_SETTINGS_PATH, CATEGORIES_DOC_NAME);
 
             try {
                 const newNames = [...categoryNames, name];
-                await setDoc(userSettingsRef, { names: newNames });
+                await setDoc(userSettingsRef, { names: newNames, userId: currentUserId }); 
                 newCategoryNameInput.value = '';
             } catch (error) {
                 console.error("Error adding category:", error);
@@ -375,16 +380,18 @@
             if (newName === "" || newName === oldName) return;
 
             const { setDoc, doc, updateDoc } = window.moduleExports;
-            const userSettingsRef = doc(db, CATEGORIES_COLLECTION_PATH, CATEGORIES_DOC_PATH);
+            const USER_SETTINGS_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${CATEGORIES_COLLECTION_NAME}`;
+            const USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
+            const userSettingsRef = doc(db, USER_SETTINGS_PATH, CATEGORIES_DOC_NAME);
 
             try {
                 const newNames = categoryNames.map(name => (name === oldName ? newName : name));
-                await setDoc(userSettingsRef, { names: newNames });
+                await setDoc(userSettingsRef, { names: newNames, userId: currentUserId }); 
                 
                 const batchUpdateData = allLedgerData.filter(entry => entry.category === oldName);
                 if (batchUpdateData.length > 0) {
                     batchUpdateData.forEach(async (entry) => {
-                         const entryRef = doc(db, ENTRIES_COLLECTION_PATH, entry.id);
+                         const entryRef = doc(db, USER_ENTRIES_PATH, entry.id);
                          await updateDoc(entryRef, { category: newName });
                     });
                 }
@@ -396,17 +403,19 @@
         async function deleteCategory(name) {
             if (!confirm(`카테고리 '${name}'을(를) 삭제하시겠습니까? 이 카테고리의 모든 지출 항목은 '기타'로 변경됩니다.`)) return;
 
-            const { setDoc, doc, updateDoc } = window.moduleExports;
-            const userSettingsRef = doc(db, CATEGORIES_COLLECTION_PATH, CATEGORIES_DOC_PATH);
+            const { setDoc, doc, updateDoc, USER_BASE_COLLECTION, ENTRIES_COLLECTION_NAME } = window.moduleExports;
+            const USER_SETTINGS_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${CATEGORIES_COLLECTION_NAME}`;
+            const USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
+            const userSettingsRef = doc(db, USER_SETTINGS_PATH, CATEGORIES_DOC_NAME);
 
             try {
                 const newNames = categoryNames.filter(n => n !== name);
-                await setDoc(userSettingsRef, { names: newNames });
+                await setDoc(userSettingsRef, { names: newNames, userId: currentUserId });
 
                 const batchUpdateData = allLedgerData.filter(entry => entry.category === name);
                 if (batchUpdateData.length > 0) {
                     batchUpdateData.forEach(async (entry) => {
-                         const entryRef = doc(db, ENTRIES_COLLECTION_PATH, entry.id);
+                         const entryRef = doc(db, USER_ENTRIES_PATH, entry.id);
                          await updateDoc(entryRef, { category: '기타' });
                     });
                 }
@@ -589,11 +598,13 @@
                 button.addEventListener('click', async (e) => {
                     const docId = e.currentTarget.dataset.id;
                     const { doc, deleteDoc } = window.moduleExports;
+                    const USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
+
 
                     console.log(`[삭제 요청] Firestore 문서 ID: ${docId}를 삭제합니다.`);
 
                     try {
-                        await deleteDoc(doc(db, ENTRIES_COLLECTION_PATH, docId)); 
+                        await deleteDoc(doc(db, USER_ENTRIES_PATH, docId)); 
                     } catch (error) {
                         console.error("Error removing document: ", error);
                     }
@@ -645,9 +656,11 @@
                     button.addEventListener('click', async (e) => {
                         const docId = e.currentTarget.dataset.id;
                         const { doc, deleteDoc } = window.moduleExports;
+                        const USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
+
 
                         try {
-                            await deleteDoc(doc(db, ENTRIES_COLLECTION_PATH, docId)); 
+                            await deleteDoc(doc(db, USER_ENTRIES_PATH, docId)); 
                             closeModal(); 
                         } catch (error) {
                             console.error("Error removing document: ", error);
@@ -757,11 +770,13 @@
                 item: item,
                 amount: amount,
                 timestamp: new Date().toISOString(), 
+                userId: currentUserId // UID 추가 (보안 규칙 준수)
             };
 
             const { addDoc, collection } = window.moduleExports;
+            const USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
             try {
-                const docRef = await addDoc(collection(db, ENTRIES_COLLECTION_PATH), newEntry);
+                const docRef = await addDoc(collection(db, USER_ENTRIES_PATH), newEntry);
                 console.log("Document written with ID: ", docRef.id);
                 
                 glForm.reset(); 
@@ -792,11 +807,13 @@
                 item: item,
                 amount: amount,
                 timestamp: new Date().toISOString(), 
+                userId: currentUserId // UID 추가 (보안 규칙 준수)
             };
             
             const { addDoc, collection } = window.moduleExports;
+            const USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
             try {
-                const docRef = await addDoc(collection(db, ENTRIES_COLLECTION_PATH), newEntry);
+                const docRef = await addDoc(collection(db, USER_ENTRIES_PATH), newEntry);
                 console.log("Modal Document written with ID: ", docRef.id);
                 
                 modalLedgerForm.reset(); 
