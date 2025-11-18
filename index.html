@@ -50,7 +50,7 @@
         window.initApp = async () => {
             try {
                 await signInAnonymously(auth); // 접속 권한 획득
-                document.getElementById('user-id').textContent = "가족 공유 모드";
+                document.getElementById('user-id').textContent = "공유 모드";
                 
                 // 데이터 동기화 시작
                 startDataSync();
@@ -482,5 +482,6 @@
     </div>
 </body>
 </html>
+
 
 
