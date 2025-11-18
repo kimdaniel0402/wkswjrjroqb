@@ -3,832 +3,500 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>가계부 및 달력 지출 관리</title>
+    <title>나만의 가계부 (클라우드 동기화)</title>
+    <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Day.js 라이브러리 -->
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/locale/ko.js"></script>
     <script>dayjs.locale('ko');</script>
 
+    <!-- Firebase 연결 스크립트 -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, onSnapshot, doc, deleteDoc, query, addDoc, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        // --- [필수] 고객님께서 제공하신 Firebase Config 정보가 여기에 통합되었습니다. ---
+        // --- [수정됨] 고객님 본인의 household-ledger-app 설정 정보 ---
         const firebaseConfig = {
-             apiKey: "AIzaSyCzzQo4-qQZBSHx8TNy7akr8yho8KkJaSQ",
-             authDomain: "joseph-home.firebaseapp.com",
-             projectId: "joseph-home",
-             storageBucket: "joseph-home.firebasestorage.app",
-             messagingSenderId: "378047604301",
-             appId: "1:378047604301:web:77c26733ed7a23334691e04",
-             measurementId: "G-3VY6X5STKP"
+             apiKey: "AIzaSyDibLptsmjCAKK5vziL4VFMN_txxqptmns",
+             authDomain: "household-ledger-app.firebaseapp.com",
+             projectId: "household-ledger-app",
+             storageBucket: "household-ledger-app.firebasestorage.app",
+             messagingSenderId: "716953028331",
+             appId: "1:716953028331:web:c8c191edfd5235a3d460ae",
+             measurementId: "G-9SZG3VCB19"
         }; 
-        // ----------------------------------------------------------------------
         
-        // Firestore 컬렉션 경로 (사용자 UID 기반으로 변경됨)
-        const ENTRIES_COLLECTION_NAME = `ledger_entries`;
-        const CATEGORIES_COLLECTION_NAME = `settings`;
-        const CATEGORIES_DOC_NAME = `categories`;
-        const USER_BASE_COLLECTION = `users`; // 최상위 사용자 컬렉션
-        const DEFAULT_CATEGORIES = ['식사', '유흥', '쇼핑', '월정액', '기타']; 
-
-        // Config 유효성 검사
-        if (!firebaseConfig.projectId || !firebaseConfig.apiKey) {
-            console.error("FIREBASE ERROR: firebaseConfig 정보가 누락되었습니다.");
-        }
-
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
         const auth = getAuth(app);
 
-        window.moduleExports = { getFirestore, collection, onSnapshot, doc, deleteDoc, query, addDoc, setDoc, updateDoc, USER_BASE_COLLECTION, ENTRIES_COLLECTION_NAME, CATEGORIES_COLLECTION_NAME, CATEGORIES_DOC_NAME };
+        // 경로 상수 정의
+        // 기존 공유 데이터도 읽을 수 있도록 설정 (데이터 복구용)
+        const LEGACY_ENTRIES_PATH = `ledger_entries`; 
+        const LEGACY_CATEGORIES_PATH = `user_settings/categories`; 
+        
+        // 개인 데이터 경로
+        const USER_BASE_COLLECTION = `users`; 
+        const ENTRIES_COLLECTION_NAME = `ledger_entries`;
+        const CATEGORIES_COLLECTION_NAME = `settings`;
+        const CATEGORIES_DOC_NAME = `categories`;
+
+        const DEFAULT_CATEGORIES = ['식사', '유흥', '쇼핑', '월정액', '기타']; 
+
+        window.moduleExports = { 
+            getFirestore, collection, onSnapshot, doc, deleteDoc, query, addDoc, setDoc, updateDoc, 
+            LEGACY_ENTRIES_PATH, LEGACY_CATEGORIES_PATH,
+            USER_BASE_COLLECTION, ENTRIES_COLLECTION_NAME, CATEGORIES_COLLECTION_NAME, CATEGORIES_DOC_NAME 
+        };
 
         window.firebaseReady = new Promise(async (resolve) => {
-            let userId = 'loading';
-            if (!firebaseConfig.projectId) {
-                document.getElementById('sync-status').textContent = '설정 오류: Config 정보 누락.';
-                document.getElementById('sync-status').classList.replace('text-yellow-500', 'text-red-500');
-                return resolve(false);
-            }
             try {
-                // 익명 로그인 시도
                 await signInAnonymously(auth); 
-                userId = auth.currentUser?.uid || crypto.randomUUID();
-                
+                const userId = auth.currentUser?.uid || crypto.randomUUID();
                 document.getElementById('user-id').textContent = userId;
-                window.startSync(db, auth, userId); 
                 
+                // 앱 시작
+                window.startApp(db, auth, userId); 
                 resolve(true);
             } catch (error) {
+                console.error("Firebase Init Error:", error);
                 if (error.code === 'auth/configuration-not-found') {
-                    console.error("해결책: Firebase 콘솔 -> Build -> Authentication -> Sign-in method 탭에서 'Anonymous'를 활성화해야 합니다.");
+                     alert("오류: Firebase 콘솔에서 'Authentication(인증)' -> 'Sign-in method' -> '익명(Anonymous)'을 사용 설정해주세요.");
                 }
-                console.error("Firebase Auth or Init Error:", error);
-                document.getElementById('sync-status').textContent = '인증 및 DB 연결 실패';
-                document.getElementById('sync-status').classList.replace('text-yellow-500', 'text-red-500');
-                resolve(false);
+                document.getElementById('sync-status').textContent = '연결 실패 (설정 확인 필요)';
+                document.getElementById('sync-status').className = 'font-medium text-red-500';
             }
         });
     </script>
     
     <style>
-        /* 기본 스타일 */
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #f7f9fb;
-        }
-        /* 스크롤바 스타일 */
+        body { font-family: 'Inter', sans-serif; background-color: #f7f9fb; }
         .scroll-list::-webkit-scrollbar { width: 6px; }
         .scroll-list::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 3px; }
         .scroll-list::-webkit-scrollbar-track { background: transparent; }
-        /* 숫자 입력 필드 화살표 숨기기 */
-        input[type="number"]::-webkit-outer-spin-button,
-        input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+        input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
         input[type="number"] { -moz-appearance: textfield; }
 
-        /* 캘린더 그리드 레이아웃 */
         .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; }
-        .day-header { font-weight: bold; padding: 8px 0; font-size: 0.9rem; }
-        .day-cell { padding: 4px; height: 80px; background-color: #fff; border-radius: 6px; cursor: pointer; transition: background-color 0.15s; display: flex; flex-direction: column; justify-content: flex-start; align-items: center; overflow: hidden; border: 1px solid #e5e7eb; }
-        .day-cell:hover:not(.empty-cell) { background-color: #e0f2fe; }
-        .empty-cell { background-color: #f3f4f6; cursor: default; }
-        .date-number { font-weight: bold; font-size: 0.8rem; width: 100%; text-align: left; padding: 2px 4px 0; color: #374151; }
-        .total-amount { font-size: 0.75rem; color: #ef4444; font-weight: 600; margin-top: 2px; line-height: 1.1; }
-        .is-today { border: 2px solid #4f46e5; }
-        .category-card-item:hover { background-color: #f3f4f6; cursor: pointer; }
+        .day-header { font-weight: bold; padding: 8px 0; font-size: 0.8rem; color: #6b7280; }
+        .day-cell { padding: 4px; height: 80px; background-color: #fff; border-radius: 6px; cursor: pointer; border: 1px solid #e5e7eb; display: flex; flex-direction: column; align-items: flex-start; overflow: hidden; }
+        .day-cell:hover:not(.empty-cell) { background-color: #eff6ff; border-color: #3b82f6; }
+        .empty-cell { background-color: #f9fafb; cursor: default; border: none; }
+        .date-number { font-weight: bold; font-size: 0.85rem; width: 100%; text-align: left; padding-left: 2px; }
+        .total-amount { font-size: 0.7rem; color: #ef4444; font-weight: 700; width: 100%; text-align: right; padding-right: 2px; margin-top: auto; }
+        .is-today { border: 2px solid #6366f1; }
+        
+        /* 모달 레이아웃 강제 적용 */
+        .modal-backdrop { display: none; }
+        .modal-backdrop.flex { display: flex !important; }
     </style>
 </head>
-<body class="p-4 md:p-8">
+<body class="p-4 md:p-8 text-gray-800">
 
-    <div id="modal-backdrop" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50" onclick="closeModal()">
-        <div id="calendar-modal" class="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4" onclick="event.stopPropagation()">
+    <!-- 달력 상세 모달 -->
+    <div id="modal-backdrop" class="modal-backdrop fixed inset-0 bg-black bg-opacity-50 items-center justify-center z-50">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden" onclick="event.stopPropagation()">
             <div class="p-6">
-                <h3 id="modal-date-title" class="text-2xl font-bold text-gray-800 mb-4 border-b pb-2"></h3>
+                <div class="flex justify-between items-center mb-4 border-b pb-2">
+                    <h3 id="modal-date-title" class="text-xl font-bold text-gray-800"></h3>
+                    <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600">✕</button>
+                </div>
                 
                 <form id="modal-ledger-form" class="space-y-3 mb-6 p-4 bg-gray-50 rounded-lg">
-                    <p class="text-sm font-semibold text-indigo-600">이 날짜에 지출 등록</p>
                     <input type="hidden" id="modal-gl-date">
-                    
-                    <select id="modal-gl-category" required class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm">
-                        <option value="" disabled selected>-- 카테고리 선택 --</option>
-                        </select>
-
-                    <input type="text" id="modal-gl-item" placeholder="항목 (예: 카페, 택시비)" required class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm">
-                    <input type="number" id="modal-gl-amount" placeholder="금액 (원)" required class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm">
-                    
-                    <button type="submit" id="modal-submit-btn" class="w-full bg-green-500 text-white p-2 rounded-lg hover:bg-green-600 transition duration-150 font-semibold shadow-md">
-                        지출 등록
-                    </button>
+                    <div class="grid grid-cols-2 gap-2">
+                        <select id="modal-gl-category" required class="w-full p-2 border border-gray-300 rounded text-sm"></select>
+                        <input type="number" id="modal-gl-amount" placeholder="금액" required class="w-full p-2 border border-gray-300 rounded text-sm">
+                    </div>
+                    <input type="text" id="modal-gl-item" placeholder="내용 (예: 점심)" required class="w-full p-2 border border-gray-300 rounded text-sm">
+                    <button type="submit" class="w-full bg-indigo-500 text-white p-2 rounded hover:bg-indigo-600 font-bold text-sm">추가하기</button>
                 </form>
 
-                <h4 class="text-xl font-semibold text-gray-700 mb-3 border-t pt-3">상세 기록 및 삭제</h4>
-                <ul id="modal-detail-list" class="max-h-80 overflow-y-auto space-y-3 scroll-list">
-                    </ul>
-                <div id="modal-total-sum" class="text-right text-xl font-bold text-indigo-600 mt-4 pt-3 border-t"></div>
-                
-                <div class="mt-6 text-right">
-                    <button id="modal-close-btn" onclick="closeModal()" class="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition font-semibold">닫기</button>
-                </div>
+                <h4 class="text-sm font-semibold text-gray-500 mb-2">상세 내역</h4>
+                <ul id="modal-detail-list" class="max-h-60 overflow-y-auto space-y-2 scroll-list"></ul>
+                <div id="modal-total-sum" class="text-right text-lg font-extrabold text-indigo-600 mt-4 pt-3 border-t"></div>
             </div>
         </div>
     </div>
     
-    <div id="category-modal-backdrop" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50" onclick="closeCategoryModal()">
-        <div id="category-modal" class="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4" onclick="event.stopPropagation()">
+    <!-- 카테고리 관리 모달 -->
+    <div id="category-modal-backdrop" class="modal-backdrop fixed inset-0 bg-black bg-opacity-50 items-center justify-center z-50">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden" onclick="event.stopPropagation()">
             <div class="p-6">
-                <h3 id="category-modal-title" class="text-2xl font-bold text-gray-800 mb-4 border-b pb-2"></h3>
-                
-                <div id="category-management-ui" class="space-y-4 mb-6 p-4 bg-gray-50 rounded-lg">
-                    <h4 class="text-lg font-semibold text-indigo-600">카테고리 추가/수정</h4>
-                    <form id="add-category-form" class="flex space-x-2">
-                        <input type="text" id="new-category-name" placeholder="새 카테고리 이름" required class="flex-grow p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm">
-                        <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition">추가</button>
-                    </form>
-                    
-                    <div id="existing-categories-list" class="space-y-2 max-h-40 overflow-y-auto scroll-list">
-                        </div>
+                <div class="flex justify-between items-center mb-4 border-b pb-2">
+                    <h3 id="category-modal-title" class="text-xl font-bold text-gray-800">카테고리 관리</h3>
+                    <button onclick="closeCategoryModal()" class="text-gray-400 hover:text-gray-600">✕</button>
                 </div>
 
-                <h4 id="category-detail-title" class="text-xl font-semibold text-gray-700 mb-3 border-t pt-3">전체 지출 내역</h4>
-                <ul id="category-detail-list" class="max-h-80 overflow-y-auto space-y-3 scroll-list">
-                    </ul>
-                
-                <div class="mt-6 text-right">
-                    <button id="category-modal-close-btn" onclick="closeCategoryModal()" class="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition font-semibold">닫기</button>
+                <!-- 관리 UI -->
+                <div id="category-management-ui" class="space-y-4">
+                    <form id="add-category-form" class="flex space-x-2">
+                        <input type="text" id="new-category-name" placeholder="새 카테고리명" required class="flex-grow p-2 border border-gray-300 rounded text-sm">
+                        <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 text-sm font-bold">추가</button>
+                    </form>
+                    <div id="existing-categories-list" class="space-y-2 max-h-60 overflow-y-auto scroll-list bg-gray-50 p-2 rounded"></div>
+                </div>
+
+                <!-- 상세 내역 UI (숨김 처리됨) -->
+                <div id="category-detail-view" style="display:none;">
+                    <ul id="category-detail-list" class="max-h-80 overflow-y-auto space-y-2 scroll-list"></ul>
                 </div>
             </div>
         </div>
     </div>
 
-
-    <div id="status-bar" class="fixed top-0 left-0 right-0 p-2 bg-gray-800 text-white text-center text-sm shadow-lg z-50">
-        <span id="sync-status" class="font-medium text-yellow-500">클라우드 데이터베이스 연결 중...</span> | 
-        사용자 ID: <span id="user-id" class="font-mono text-xs"></span>
+    <!-- 상단 상태바 -->
+    <div class="bg-gray-800 text-white text-xs p-2 text-center">
+        <span id="sync-status" class="text-yellow-400">서버 연결 중...</span> | ID: <span id="user-id">...</span>
     </div>
 
-    <div class="pt-10"> <h1 class="text-3xl md:text-4xl font-extrabold text-gray-800 mb-6 text-center">나의 똑똑한 가계부 (클라우드 동기화)</h1>
+    <div class="max-w-6xl mx-auto pt-6 px-2">
+        <h1 class="text-2xl md:text-3xl font-extrabold text-gray-800 mb-6 text-center">나만의 똑똑한 가계부</h1>
 
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
             
-            <div class="lg:col-span-1 bg-white p-6 rounded-xl shadow-lg h-full order-1 lg:order-1">
-                <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">1. 지출 등록</h2>
-                <p class="text-sm text-gray-500 mb-4">지출을 기록하면 모든 기기에 자동 동기화됩니다.</p>
-
-                <form id="general-ledger-form" class="space-y-3 mb-8">
-                    <input type="date" id="gl-date" required class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm">
-                    
-                    <select id="gl-category" required class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm">
-                        <option value="" disabled selected>-- 카테고리 선택 --</option>
-                        </select>
-
-                    <input type="text" id="gl-item" placeholder="항목 (예: 저녁 식사, 넷플릭스)" required class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm">
-                    <input type="number" id="gl-amount" placeholder="금액 (원)" required class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm">
-                    <button type="submit" id="submit-btn" class="w-full bg-indigo-500 text-white p-2 rounded-lg hover:bg-indigo-600 transition duration-150 font-semibold shadow-md" disabled>
-                        지출 등록 및 동기화
-                    </button>
+            <!-- [왼쪽] 입력 및 카테고리 -->
+            <div class="lg:col-span-1 bg-white p-5 rounded-xl shadow-md h-fit">
+                <h2 class="text-lg font-bold text-indigo-600 mb-4 border-b pb-2">지출 등록</h2>
+                <form id="general-ledger-form" class="space-y-3 mb-6">
+                    <input type="date" id="gl-date" required class="w-full p-2 border border-gray-300 rounded text-sm">
+                    <select id="gl-category" required class="w-full p-2 border border-gray-300 rounded text-sm"></select>
+                    <input type="text" id="gl-item" placeholder="내용" required class="w-full p-2 border border-gray-300 rounded text-sm">
+                    <input type="number" id="gl-amount" placeholder="금액" required class="w-full p-2 border border-gray-300 rounded text-sm">
+                    <button type="submit" id="submit-btn" class="w-full bg-indigo-500 text-white p-3 rounded hover:bg-indigo-600 font-bold transition" disabled>등록하기</button>
                 </form>
 
-                <div class="flex justify-between items-center mb-4 border-b pb-2">
-                    <h2 class="text-2xl font-bold text-indigo-600">카테고리 보고서</h2>
-                    <button id="manage-categories-btn" class="text-sm text-blue-500 hover:text-blue-700 font-medium">
-                        [+ 관리]
-                    </button>
+                <div class="flex justify-between items-center mb-2 mt-8 border-t pt-4">
+                    <h2 class="text-lg font-bold text-indigo-600">카테고리별 지출</h2>
+                    <button onclick="openCategoryManager()" class="text-xs text-blue-500 font-bold px-2 py-1 bg-blue-50 rounded hover:bg-blue-100">설정</button>
                 </div>
-                
-                <p class="text-sm text-gray-500 mb-4">선택된 월의 지출이 카테고리별로 자동 합산됩니다. (클릭하여 상세 내역 확인)</p>
-                <div id="category-container-sidebar" class="grid grid-cols-1 gap-4">
-                    <p class="text-center text-gray-400 py-4">카테고리 로딩 중...</p>
-                    </div>
+                <div id="category-container-sidebar" class="grid grid-cols-1 gap-3">
+                    <p class="text-center text-gray-400 text-sm py-4">데이터 로딩 중...</p>
+                </div>
             </div>
 
-
-            <div class="lg:col-span-2 bg-white p-6 rounded-xl shadow-lg order-2 lg:order-2">
-                <h2 class="text-2xl font-bold text-indigo-600 mb-4 border-b pb-2">2. 월별 지출 달력 및 합계</h2>
+            <!-- [오른쪽] 달력 및 월별 목록 -->
+            <div class="lg:col-span-2 bg-white p-5 rounded-xl shadow-md">
                 <div class="flex justify-between items-center mb-4">
-                    <div class="flex space-x-2">
-                        <button id="prev-month-btn" class="bg-gray-200 text-gray-700 px-3 py-1 rounded-lg hover:bg-gray-300 transition font-semibold">&lt;</button>
+                    <div class="flex items-center space-x-4">
+                        <button id="prev-month-btn" class="text-gray-500 hover:text-black font-bold text-xl px-2">&lt;</button>
                         <h3 id="current-month-display" class="text-xl font-bold text-gray-800"></h3>
-                        <button id="next-month-btn" class="bg-gray-200 text-gray-700 px-3 py-1 rounded-lg hover:bg-gray-300 transition font-semibold">&gt;</button>
+                        <button id="next-month-btn" class="text-gray-500 hover:text-black font-bold text-xl px-2">&gt;</button>
                     </div>
-                    <div class="text-lg font-bold text-gray-700">총 합계: <span id="total-sum" class="text-xl font-extrabold text-indigo-700">0 원</span></div>
+                    <div class="text-right">
+                        <span class="text-sm text-gray-500 block">이번 달 합계</span>
+                        <span id="total-sum" class="text-xl font-extrabold text-indigo-600">0 원</span>
+                    </div>
                 </div>
 
-                <div id="calendar-area">
-                    <div class="calendar-grid mb-2">
-                        <div class="day-header text-red-500">일</div>
-                        <div class="day-header">월</div>
-                        <div class="day-header">화</div>
-                        <div class="day-header">수</div>
-                        <div class="day-header">목</div>
-                        <div class="day-header">금</div>
-                        <div class="day-header text-blue-500">토</div>
-                    </div>
-                    <div id="calendar-days" class="calendar-grid"></div>
+                <!-- 달력 -->
+                <div class="calendar-grid mb-2 bg-gray-50 rounded-t-lg border-b">
+                    <div class="day-header text-red-500">일</div>
+                    <div class="day-header">월</div><div class="day-header">화</div><div class="day-header">수</div><div class="day-header">목</div><div class="day-header">금</div>
+                    <div class="day-header text-blue-500">토</div>
                 </div>
+                <div id="calendar-days" class="calendar-grid mb-8"></div>
 
-                <h3 class="text-xl font-semibold text-gray-700 mt-6 mb-3 border-t pt-3">선택 월 지출 기록</h3>
-                <ul id="general-ledger-list" class="space-y-2 max-h-56 overflow-y-auto scroll-list">
-                    <li class="text-center text-sm text-gray-400 py-4">클라우드에서 데이터 로딩 중...</li>
-                </ul>
+                <!-- 월별 목록 -->
+                <h3 class="text-lg font-bold border-b pb-2 mb-3 text-gray-700">전체 내역</h3>
+                <ul id="general-ledger-list" class="space-y-2 max-h-80 overflow-y-auto scroll-list"></ul>
             </div>
-
         </div>
     </div>
 
     <script>
-        // --- 전역 데이터 및 UI 요소 ---
-        let allLedgerData = []; 
-        let categoryNames = []; 
-        const DEFAULT_CATEGORIES = ['식사', '유흥', '쇼핑', '월정액', '기타']; 
+        // --- UI 로직 ---
+        window.allLedgerData = [];
+        window.categoryNames = [];
+        window.currentCalendarDate = dayjs();
+        window.categories = {};
+        let db, auth, currentUserId;
+        let USER_ENTRIES_PATH, SHARED_ENTRIES_REF;
 
-        let currentCalendarDate = dayjs(); 
-        let dailyTotals = {}; 
-        const categories = {}; 
-
-        // UI 요소 (기존과 동일)
-        const glList = document.getElementById('general-ledger-list');
-        const totalSumDisplay = document.getElementById('total-sum');
-        const glForm = document.getElementById('general-ledger-form');
-        const submitBtn = document.getElementById('submit-btn');
-        const calendarDays = document.getElementById('calendar-days');
-        const currentMonthDisplay = document.getElementById('current-month-display');
-        const categoryContainerSidebar = document.getElementById('category-container-sidebar'); 
-        const modalBackdrop = document.getElementById('modal-backdrop');
-        const modalDateTitle = document.getElementById('modal-date-title');
-        const modalDetailList = document.getElementById('modal-detail-list');
-        const modalTotalSum = document.getElementById('modal-total-sum');
-        const modalCloseBtn = document.getElementById('modal-close-btn');
-        
-        // 모달 내 입력 폼 요소
-        const modalLedgerForm = document.getElementById('modal-ledger-form');
-        const modalGlDate = document.getElementById('modal-gl-date');
-        const modalGlCategory = document.getElementById('modal-gl-category');
-        const modalGlItem = document.getElementById('modal-gl-item');
-        const modalGlAmount = document.getElementById('modal-gl-amount');
-        
-        // 카테고리 관리 UI 요소
-        const categoryModalBackdrop = document.getElementById('category-modal-backdrop');
-        const categoryModalTitle = document.getElementById('category-modal-title');
-        const categoryDetailTitle = document.getElementById('category-detail-title');
-        const categoryDetailList = document.getElementById('category-detail-list');
-        const categoryModalCloseBtn = document.getElementById('category-modal-close-btn');
-        const manageCategoriesBtn = document.getElementById('manage-categories-btn');
-        const addCategoryForm = document.getElementById('add-category-form');
-        const newCategoryNameInput = document.getElementById('new-category-name');
-        const existingCategoriesList = document.getElementById('existing-categories-list');
-        const categoryManagementUI = document.getElementById('category-management-ui');
-
-        let db; 
-        const USER_BASE_COLLECTION = `users`; 
-        const ENTRIES_COLLECTION_NAME = `ledger_entries`;
-        const CATEGORIES_COLLECTION_NAME = `settings`;
-        const CATEGORIES_DOC_NAME = `categories`;
-        let currentUserId; // 현재 접속 사용자 UID
-
-        // --- 유틸리티 함수 (생략) ---
-
-        function formatCurrency(amount) {
-            if (isNaN(amount) || amount === null) return '0 원';
-            return amount.toLocaleString('ko-KR') + ' 원';
-        }
-
-        // --- Firebase 동기화 로직 ---
-
-        window.startSync = (firestoreDbInstance, auth, userId) => {
-            const { collection, onSnapshot, query, doc, setDoc, updateDoc } = window.moduleExports;
+        // --- 초기화 및 동기화 ---
+        window.startApp = (firestoreDb, firebaseAuth, userId) => {
+            const { collection, onSnapshot, query, doc, setDoc, updateDoc, 
+                    LEGACY_ENTRIES_PATH, LEGACY_CATEGORIES_PATH,
+                    USER_BASE_COLLECTION, ENTRIES_COLLECTION_NAME, CATEGORIES_COLLECTION_NAME, CATEGORIES_DOC_NAME } = window.moduleExports;
             
-            db = firestoreDbInstance;
+            db = firestoreDb;
+            auth = firebaseAuth;
             currentUserId = userId;
-            
-            // 사용자별 경로 설정
-            const USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
+
+            // 사용자별 경로
+            USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
             const USER_SETTINGS_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${CATEGORIES_COLLECTION_NAME}`;
             const USER_CATEGORIES_REF = doc(db, USER_SETTINGS_PATH, CATEGORIES_DOC_NAME);
+            
+            // 기존(공유) 데이터 참조 (복구용)
+            SHARED_ENTRIES_REF = collection(db, LEGACY_ENTRIES_PATH);
+            const SHARED_CATEGORIES_REF = doc(db, LEGACY_CATEGORIES_PATH);
 
-            // 1. 카테고리 목록 실시간 리스너 (사용자별)
+            // 1. 카테고리 로드 (개인 -> 없으면 공유 -> 없으면 기본)
             onSnapshot(USER_CATEGORIES_REF, (docSnap) => {
-                if (docSnap.exists() && docSnap.data().names && docSnap.data().names.length > 0) {
-                    categoryNames = docSnap.data().names;
+                if (docSnap.exists() && docSnap.data().names) {
+                    window.categoryNames = docSnap.data().names;
+                    updateCategoryUI();
                 } else {
-                    // 최초 접속 시 기본 카테고리 생성 (규칙에 userId 필드 추가가 필요함)
-                    categoryNames = DEFAULT_CATEGORIES;
-                    setDoc(USER_CATEGORIES_REF, { names: DEFAULT_CATEGORIES, userId: currentUserId }, { merge: true }).catch(e => console.error("Initial category set error:", e));
-                }
-                console.log('Categories synced:', categoryNames);
-                renderCategorySelects(); 
-                renderCategoryManagementList();
-            }, (error) => {
-                console.error("Categories Snapshot Error:", error);
-            });
-
-
-            // 2. 지출 내역 실시간 리스너 (사용자별)
-            const entriesCollectionRef = collection(db, USER_ENTRIES_PATH);
-            
-            onSnapshot(query(entriesCollectionRef), (snapshot) => {
-                allLedgerData = [];
-                snapshot.forEach(doc => {
-                    allLedgerData.push({ id: doc.id, ...doc.data() });
-                });
-                console.log('Ledger Data synced. Total entries:', allLedgerData.length);
-                
-                renderCalendar(); 
-                
-                document.getElementById('sync-status').textContent = '클라우드 동기화 완료';
-                document.getElementById('sync-status').classList.replace('text-yellow-500', 'text-green-500');
-            }, (error) => {
-                console.error("Firestore Snapshot Error:", error);
-                document.getElementById('sync-status').textContent = '동기화 오류 발생. 콘솔 확인.';
-                document.getElementById('sync-status').classList.replace('text-green-500', 'text-red-500');
-            });
-
-            submitBtn.disabled = false;
-            submitBtn.textContent = '지출 등록 및 동기화';
-        };
-
-        // --- 카테고리 관리 함수 ---
-        
-        function renderCategorySelects() {
-            const optionsHtml = categoryNames.map(name => `<option value="${name}">${name}</option>`).join('');
-            const defaultOption = '<option value="" disabled selected>-- 카테고리 선택 --</option>';
-            
-            document.getElementById('gl-category').innerHTML = defaultOption + optionsHtml;
-            modalGlCategory.innerHTML = defaultOption + optionsHtml;
-        }
-
-        async function addCategory(name) {
-            name = name.trim();
-            if (name === "" || categoryNames.includes(name)) return;
-
-            const { setDoc, doc } = window.moduleExports;
-            const USER_SETTINGS_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${CATEGORIES_COLLECTION_NAME}`;
-            const userSettingsRef = doc(db, USER_SETTINGS_PATH, CATEGORIES_DOC_NAME);
-
-            try {
-                const newNames = [...categoryNames, name];
-                await setDoc(userSettingsRef, { names: newNames, userId: currentUserId }); 
-                newCategoryNameInput.value = '';
-            } catch (error) {
-                console.error("Error adding category:", error);
-            }
-        }
-
-        async function updateCategory(oldName, newName) {
-            newName = newName.trim();
-            if (newName === "" || newName === oldName) return;
-
-            const { setDoc, doc, updateDoc } = window.moduleExports;
-            const USER_SETTINGS_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${CATEGORIES_COLLECTION_NAME}`;
-            const USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
-            const userSettingsRef = doc(db, USER_SETTINGS_PATH, CATEGORIES_DOC_NAME);
-
-            try {
-                const newNames = categoryNames.map(name => (name === oldName ? newName : name));
-                await setDoc(userSettingsRef, { names: newNames, userId: currentUserId }); 
-                
-                const batchUpdateData = allLedgerData.filter(entry => entry.category === oldName);
-                if (batchUpdateData.length > 0) {
-                    batchUpdateData.forEach(async (entry) => {
-                         const entryRef = doc(db, USER_ENTRIES_PATH, entry.id);
-                         await updateDoc(entryRef, { category: newName });
-                    });
-                }
-            } catch (error) {
-                console.error("Error updating category:", error);
-            }
-        }
-        
-        async function deleteCategory(name) {
-            if (!confirm(`카테고리 '${name}'을(를) 삭제하시겠습니까? 이 카테고리의 모든 지출 항목은 '기타'로 변경됩니다.`)) return;
-
-            const { setDoc, doc, updateDoc, USER_BASE_COLLECTION, ENTRIES_COLLECTION_NAME } = window.moduleExports;
-            const USER_SETTINGS_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${CATEGORIES_COLLECTION_NAME}`;
-            const USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
-            const userSettingsRef = doc(db, USER_SETTINGS_PATH, CATEGORIES_DOC_NAME);
-
-            try {
-                const newNames = categoryNames.filter(n => n !== name);
-                await setDoc(userSettingsRef, { names: newNames, userId: currentUserId });
-
-                const batchUpdateData = allLedgerData.filter(entry => entry.category === name);
-                if (batchUpdateData.length > 0) {
-                    batchUpdateData.forEach(async (entry) => {
-                         const entryRef = doc(db, USER_ENTRIES_PATH, entry.id);
-                         await updateDoc(entryRef, { category: '기타' });
-                    });
-                }
-            } catch (error) {
-                console.error("Error deleting category:", error);
-            }
-        }
-
-        function renderCategoryManagementList() {
-            existingCategoriesList.innerHTML = '';
-            categoryNames.forEach(name => {
-                const li = document.createElement('div');
-                li.className = 'flex justify-between items-center p-2 bg-white border rounded-lg text-sm';
-                li.innerHTML = `
-                    <span id="category-name-${name}">${name}</span>
-                    <div class="space-x-2">
-                        <button data-name="${name}" class="edit-category-btn text-blue-500 hover:text-blue-700">수정</button>
-                        <button data-name="${name}" class="delete-category-btn text-red-500 hover:text-red-700">삭제</button>
-                    </div>
-                `;
-                existingCategoriesList.appendChild(li);
-            });
-            
-            document.querySelectorAll('.edit-category-btn').forEach(button => {
-                button.addEventListener('click', (e) => {
-                    const oldName = e.currentTarget.dataset.name;
-                    const newName = prompt(`'${oldName}'을(를) 새 이름으로 수정합니다:`, oldName);
-                    if (newName) updateCategory(oldName, newName);
-                });
-            });
-
-            document.querySelectorAll('.delete-category-btn').forEach(button => {
-                button.addEventListener('click', (e) => {
-                    deleteCategory(e.currentTarget.dataset.name);
-                });
-            });
-        }
-
-        // --- 캘린더 및 필터링 로직 ---
-        
-        function calculateDailyTotals(targetMonth) {
-            dailyTotals = {};
-            const targetMonthStr = targetMonth.format('YYYY-MM');
-            
-            allLedgerData.forEach(entry => {
-                if (entry.date.startsWith(targetMonthStr) && categoryNames.includes(entry.category)) {
-                    const dateKey = entry.date; 
-                    const amount = Number(entry.amount) || 0;
-                    dailyTotals[dateKey] = (dailyTotals[dateKey] || 0) + amount;
-                }
-            });
-            
-            const monthlyTotal = Object.values(dailyTotals).reduce((sum, amount) => sum + amount, 0);
-            totalSumDisplay.textContent = formatCurrency(monthlyTotal);
-            
-            const currentMonthData = allLedgerData.filter(entry => entry.date.startsWith(targetMonthStr));
-            recalculateCategoryReport(currentMonthData);
-            renderGeneralLedger(currentMonthData);
-        }
-        
-        function renderCalendar() {
-            currentMonthDisplay.textContent = currentCalendarDate.format('YYYY년 M월');
-            calculateDailyTotals(currentCalendarDate);
-
-            calendarDays.innerHTML = '';
-
-            const today = dayjs().format('YYYY-MM-DD');
-            const startOfMonth = currentCalendarDate.startOf('month');
-            const endOfMonth = currentCalendarDate.endOf('month');
-            const firstDayOfWeek = startOfMonth.day(); 
-
-            for (let i = 0; i < firstDayOfWeek; i++) {
-                const emptyCell = document.createElement('div');
-                emptyCell.className = 'day-cell empty-cell';
-                calendarDays.appendChild(emptyCell);
-            }
-
-            for (let date = startOfMonth; date.isSame(endOfMonth) || date.isBefore(endOfMonth); date = date.add(1, 'day')) {
-                const dateKey = date.format('YYYY-MM-DD');
-                const day = date.date();
-                const totalAmount = dailyTotals[dateKey] || 0;
-                
-                const cell = document.createElement('div');
-                cell.className = `day-cell relative group ${dateKey === today ? 'is-today' : ''}`;
-                cell.dataset.date = dateKey;
-                
-                cell.innerHTML = `
-                    <div class="date-number">${day}</div>
-                    ${totalAmount > 0 
-                        ? `<div class="total-amount">${formatCurrency(totalAmount)}</div>` 
-                        : ''}
-                `;
-                
-                cell.addEventListener('click', () => showDayDetailModal(dateKey));
-
-                calendarDays.appendChild(cell);
-            }
-        }
-        
-        function recalculateCategoryReport(data) {
-            categoryNames.forEach(name => {
-                categories[name] = [];
-            });
-
-            data.forEach(entry => {
-                if (categories[entry.category]) {
-                    categories[entry.category].push(entry); 
-                }
-            });
-
-            renderAllCategoriesSidebar();
-        }
-
-        function calculateCategoryTotal(categoryName) {
-            return categories[categoryName].reduce((sum, entry) => sum + (Number(entry.amount) || 0), 0);
-        }
-
-        function renderAllCategoriesSidebar() {
-            categoryContainerSidebar.innerHTML = '';
-            categoryNames.forEach(name => {
-                const data = categories[name] || [];
-                const total = calculateCategoryTotal(name);
-
-                const colorConfig = {
-                    '식사': { bg: 'bg-green-100', text: 'text-green-700', border: 'border-green-400' },
-                    '유흥': { bg: 'bg-red-100', text: 'text-red-700', border: 'border-red-400' },
-                    '쇼핑': { bg: 'bg-blue-100', text: 'text-blue-700', border: 'border-blue-400' },
-                    '월정액': { bg: 'bg-purple-100', text: 'text-purple-700', border: 'border-purple-400' },
-                    '기타': { bg: 'bg-yellow-100', text: 'text-yellow-700', border: 'border-yellow-400' }
-                };
-                const { bg, text, border } = colorConfig[name] || colorConfig['기타'];
-
-                const card = document.createElement('div');
-                card.className = `category-card-item p-3 border-l-4 rounded-lg shadow-sm ${bg} ${text} ${border}`;
-                card.dataset.category = name; 
-                card.innerHTML = `
-                    <h3 class="font-bold text-base mb-1">${name} <span class="text-xs font-normal">(${data ? data.length : 0}건)</span></h3>
-                    <div class="text-lg font-extrabold">${formatCurrency(total)}</div>
-                `;
-                categoryContainerSidebar.appendChild(card);
-                
-                card.addEventListener('click', () => showCategoryDetailModal(name));
-            });
-        }
-        
-        function renderGeneralLedger(data) {
-            glList.innerHTML = ''; 
-
-            if (data.length === 0) {
-                glList.innerHTML = '<li class="text-center text-sm text-gray-400 py-4">선택하신 월의 기록된 지출이 없습니다.</li>';
-                return;
-            }
-
-            data.sort((a, b) => new Date(b.date) - new Date(a.date));
-
-            data.forEach((entry) => {
-                const li = document.createElement('li');
-                li.className = 'flex justify-between items-center bg-gray-50 p-3 rounded-lg border border-gray-200 transition duration-150 hover:shadow-md';
-                li.innerHTML = `
-                    <div class="flex-grow">
-                        <div class="flex items-center space-x-2">
-                            <span class="text-xs font-medium text-indigo-500">${entry.category}</span>
-                            <span class="text-xs text-gray-500">${entry.date}</span>
-                        </div>
-                        <div class="font-semibold text-gray-800">${entry.item}</div>
-                    </div>
-                    <div class="flex items-center space-x-3">
-                        <span class="font-bold text-red-500">${formatCurrency(entry.amount)}</span>
-                        <button class="delete-btn text-red-400 hover:text-red-600 transition" data-id="${entry.id}">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 10-2 0v6a1 1 0 102 0V8z" clip-rule="evenodd" />
-                            </svg>
-                        </button>
-                    </div>
-                `;
-                glList.appendChild(li);
-            });
-
-            document.querySelectorAll('.delete-btn').forEach(button => {
-                button.addEventListener('click', async (e) => {
-                    const docId = e.currentTarget.dataset.id;
-                    const { doc, deleteDoc } = window.moduleExports;
-                    const USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
-
-
-                    console.log(`[삭제 요청] Firestore 문서 ID: ${docId}를 삭제합니다.`);
-
-                    try {
-                        await deleteDoc(doc(db, USER_ENTRIES_PATH, docId)); 
-                    } catch (error) {
-                        console.error("Error removing document: ", error);
-                    }
-                });
-            });
-        }
-        
-        // --- 모달 로직 ---
-        
-        function showDayDetailModal(dateKey) {
-            const dateStr = dayjs(dateKey).format('YYYY년 M월 D일 (ddd)');
-            modalDateTitle.textContent = `${dateStr} 가계부`;
-            
-            modalGlDate.value = dateKey;
-            modalLedgerForm.reset();
-            
-            modalDetailList.innerHTML = '';
-            const dayData = allLedgerData.filter(entry => entry.date === dateKey).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-            
-            if (dayData.length === 0) {
-                 modalDetailList.innerHTML = '<li class="text-center text-gray-500 py-4">해당 날짜에 기록된 지출이 없습니다.</li>';
-                 modalTotalSum.textContent = `합계: 0 원`;
-            } else {
-                let total = 0;
-                dayData.forEach(entry => {
-                    total += Number(entry.amount) || 0;
-                    
-                    const li = document.createElement('li');
-                    li.className = 'flex justify-between items-center p-3 bg-gray-50 rounded-lg border border-gray-200';
-                    li.innerHTML = `
-                        <div class="flex-grow">
-                            <div class="text-xs font-medium text-indigo-500">${entry.category}</div>
-                            <div class="font-semibold text-gray-800">${entry.item}</div>
-                        </div>
-                        <div class="flex items-center space-x-3">
-                            <span class="font-bold text-red-500">${formatCurrency(entry.amount)}</span>
-                            <button class="delete-btn-modal text-red-400 hover:text-red-600 transition" data-id="${entry.id}">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                    <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 10-2 0v6a1 1 0 102 0V8z" clip-rule="evenodd" />
-                                </svg>
-                            </button>
-                        </div>
-                    `;
-                    modalDetailList.appendChild(li);
-                });
-                modalTotalSum.textContent = `합계: ${formatCurrency(total)}`;
-                
-                document.querySelectorAll('.delete-btn-modal').forEach(button => {
-                    button.addEventListener('click', async (e) => {
-                        const docId = e.currentTarget.dataset.id;
-                        const { doc, deleteDoc } = window.moduleExports;
-                        const USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
-
-
-                        try {
-                            await deleteDoc(doc(db, USER_ENTRIES_PATH, docId)); 
-                            closeModal(); 
-                        } catch (error) {
-                            console.error("Error removing document: ", error);
+                    // 개인 카테고리가 없으면 공유 카테고리 확인
+                    onSnapshot(SHARED_CATEGORIES_REF, (sharedSnap) => {
+                        let initialCats = ['식사', '유흥', '쇼핑', '월정액', '기타'];
+                        if (sharedSnap.exists() && sharedSnap.data().names) {
+                            initialCats = sharedSnap.data().names;
                         }
+                        // 확인된 카테고리를 개인 경로에 저장 (초기화)
+                        setDoc(USER_CATEGORIES_REF, { names: initialCats, userId: currentUserId }, { merge: true });
                     });
-                });
-            }
-            
-            modalBackdrop.classList.remove('hidden');
-            modalBackdrop.classList.add('flex');
-        }
+                }
+            });
 
-        function closeModal() {
-            modalBackdrop.classList.add('hidden');
-            modalBackdrop.classList.remove('flex');
-        }
-        
-        function closeCategoryModal() {
-            categoryModalBackdrop.classList.add('hidden');
-            categoryModalBackdrop.classList.remove('flex');
-        }
+            // 2. 지출 데이터 로드 (개인 + 공유 병합 표시)
+            const userQuery = query(collection(db, USER_ENTRIES_PATH));
+            const sharedQuery = query(SHARED_ENTRIES_REF);
 
-        function showCategoryDetailModal(categoryName) {
-            categoryModalTitle.textContent = '카테고리 관리';
-            categoryDetailTitle.textContent = `${categoryName} 전체 지출 내역`;
-            categoryDetailList.innerHTML = '';
-            categoryManagementUI.style.display = 'none'; 
-            
-            const categoryData = allLedgerData.filter(entry => entry.category === categoryName).sort((a, b) => new Date(b.date) - new Date(a.date));
+            let userData = [];
+            let sharedData = [];
 
-            if (categoryData.length === 0) {
-                 categoryDetailList.innerHTML = '<li class="text-center text-gray-500 py-4">이 카테고리에 기록된 지출이 없습니다.</li>';
-            } else {
-                categoryData.forEach(entry => {
-                    const li = document.createElement('li');
-                    li.className = 'flex justify-between items-center p-3 bg-gray-50 rounded-lg border border-gray-200';
-                    li.innerHTML = `
-                        <div class="flex-grow">
-                            <div class="text-xs text-gray-500">${entry.date}</div>
-                            <div class="font-semibold text-gray-800">${entry.item}</div>
-                        </div>
-                        <div class="font-bold text-red-500">${formatCurrency(entry.amount)}</div>
-                    `;
-                    categoryDetailList.appendChild(li);
-                });
-            }
-            
-            categoryModalBackdrop.classList.remove('hidden');
-            categoryModalBackdrop.classList.add('flex');
-        }
-        
-        function showCategoryManagementModal() {
-            categoryModalTitle.textContent = '카테고리 관리 및 편집';
-            categoryDetailTitle.textContent = '현재 카테고리 목록';
-            categoryDetailList.innerHTML = '이 목록에서 지출 상세 내역을 볼 수 없습니다.';
-            categoryManagementUI.style.display = 'block'; 
-            
-            renderCategoryManagementList();
-            
-            categoryModalBackdrop.classList.remove('hidden');
-            categoryModalBackdrop.classList.add('flex');
-        }
-
-
-        // --- 이벤트 리스너 ---
-
-        document.getElementById('prev-month-btn').addEventListener('click', () => {
-            currentCalendarDate = currentCalendarDate.subtract(1, 'month');
-            renderCalendar();
-        });
-
-        document.getElementById('next-month-btn').addEventListener('click', () => {
-            currentCalendarDate = currentCalendarDate.add(1, 'month');
-            renderCalendar();
-        });
-
-        // 모달 닫기 이벤트 (HTML에 onclick이 설정되어 있음)
-        
-        // 카테고리 관리 버튼 클릭 이벤트
-        manageCategoriesBtn.addEventListener('click', showCategoryManagementModal);
-        
-        // 새 카테고리 추가 폼 제출 이벤트
-        addCategoryForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            addCategory(newCategoryNameInput.value);
-        });
-
-        // 폼 제출 시 Firebase에 저장 (메인 폼)
-        glForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-
-            if (submitBtn.disabled) return; 
-
-            const date = document.getElementById('gl-date').value;
-            const category = document.getElementById('gl-category').value;
-            const item = document.getElementById('gl-item').value.trim();
-            const amount = Number(document.getElementById('gl-amount').value);
-            
-            if (!date || !category || item === '' || isNaN(amount) || amount <= 0) {
-                console.error('날짜, 항목, 카테고리, 금액을 모두 올바르게 입력해야 합니다.');
-                return;
-            }
-
-            const newEntry = {
-                date: date,
-                category: category,
-                item: item,
-                amount: amount,
-                timestamp: new Date().toISOString(), 
-                userId: currentUserId // UID 추가 (보안 규칙 준수)
+            const mergeAndRender = () => {
+                // 두 데이터를 합쳐서 보여줍니다.
+                window.allLedgerData = [...sharedData, ...userData];
+                // 중복 제거 (ID 기준)
+                window.allLedgerData = window.allLedgerData.filter((v, i, a) => a.findIndex(t => (t.id === v.id)) === i);
+                
+                renderCalendar();
+                document.getElementById('sync-status').textContent = '동기화 완료';
+                document.getElementById('sync-status').className = 'font-medium text-green-400';
+                document.getElementById('submit-btn').disabled = false;
             };
 
-            const { addDoc, collection } = window.moduleExports;
-            const USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
-            try {
-                const docRef = await addDoc(collection(db, USER_ENTRIES_PATH), newEntry);
-                console.log("Document written with ID: ", docRef.id);
-                
-                glForm.reset(); 
-                document.getElementById('gl-date').value = dayjs().format('YYYY-MM-DD');
-                currentCalendarDate = dayjs(date); 
-            } catch (error) {
-                console.error("Error adding document: ", error);
-            }
-        });
-        
-        // 폼 제출 시 Firebase에 저장 (모달 내 폼)
-        modalLedgerForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            
-            const date = modalGlDate.value;
-            const category = modalGlCategory.value;
-            const item = modalGlItem.value.trim();
-            const amount = Number(modalGlAmount.value);
-            
-            if (!date || !category || item === '' || isNaN(amount) || amount <= 0) {
-                console.error('모달 폼: 날짜, 항목, 카테고리, 금액을 모두 올바르게 입력해야 합니다.');
-                return;
-            }
+            onSnapshot(userQuery, (snapshot) => {
+                userData = snapshot.docs.map(d => ({ id: d.id, ...d.data(), isPersonal: true }));
+                mergeAndRender();
+            });
 
-            const newEntry = {
-                date: date,
-                category: category,
-                item: item,
-                amount: amount,
-                timestamp: new Date().toISOString(), 
-                userId: currentUserId // UID 추가 (보안 규칙 준수)
-            };
-            
-            const { addDoc, collection } = window.moduleExports;
-            const USER_ENTRIES_PATH = `${USER_BASE_COLLECTION}/${currentUserId}/${ENTRIES_COLLECTION_NAME}`;
-            try {
-                const docRef = await addDoc(collection(db, USER_ENTRIES_PATH), newEntry);
-                console.log("Modal Document written with ID: ", docRef.id);
-                
-                modalLedgerForm.reset(); 
-                closeModal(); 
-            } catch (error) {
-                console.error("Error adding document from modal: ", error);
-            }
-        });
-
-
-        // 초기 날짜 설정
-        window.onload = () => {
-             document.getElementById('gl-date').value = dayjs().format('YYYY-MM-DD');
+            onSnapshot(sharedQuery, (snapshot) => {
+                sharedData = snapshot.docs.map(d => ({ id: d.id, ...d.data(), isPersonal: false }));
+                mergeAndRender();
+            });
         };
+
+        window.updateCategoryUI = () => {
+            const options = window.categoryNames.map(n => `<option value="${n}">${n}</option>`).join('');
+            const def = '<option value="" disabled selected>-- 선택 --</option>';
+            document.getElementById('gl-category').innerHTML = def + options;
+            document.getElementById('modal-gl-category').innerHTML = def + options;
+            renderCategoryManagementList();
+        };
+
+        // --- 렌더링 로직 ---
+        window.renderCalendar = () => {
+            const displayMonth = window.currentCalendarDate.format('YYYY-MM');
+            document.getElementById('current-month-display').textContent = window.currentCalendarDate.format('YYYY년 M월');
+
+            const monthlyData = window.allLedgerData.filter(d => d.date && d.date.startsWith(displayMonth));
+            
+            // 카테고리별 집계
+            window.categories = {};
+            window.categoryNames.forEach(n => window.categories[n] = []);
+            monthlyData.forEach(d => {
+                if (!window.categories[d.category]) window.categories[d.category] = [];
+                window.categories[d.category].push(d);
+            });
+            
+            // 사이드바 렌더링
+            const sidebar = document.getElementById('category-container-sidebar');
+            sidebar.innerHTML = '';
+            let totalMonthSum = 0;
+
+            window.categoryNames.forEach(name => {
+                const items = window.categories[name] || [];
+                const sum = items.reduce((acc, cur) => acc + (Number(cur.amount) || 0), 0);
+                totalMonthSum += sum;
+
+                const div = document.createElement('div');
+                div.className = 'p-3 border rounded shadow-sm hover:bg-gray-50 cursor-pointer flex justify-between bg-white';
+                div.innerHTML = `<span class="font-bold text-gray-700">${name} <small class="font-normal text-gray-500">(${items.length})</small></span><span class="font-bold text-indigo-600">${sum.toLocaleString()}원</span>`;
+                div.onclick = () => showCategoryDetail(name, items);
+                sidebar.appendChild(div);
+            });
+            document.getElementById('total-sum').textContent = `${totalMonthSum.toLocaleString()} 원`;
+            renderLedgerList(monthlyData);
+
+            // 달력 그리기
+            const calendarDays = document.getElementById('calendar-days');
+            calendarDays.innerHTML = '';
+            const startOfMonth = window.currentCalendarDate.startOf('month');
+            const endOfMonth = window.currentCalendarDate.endOf('month');
+            const startDay = startOfMonth.day();
+            const daysInMonth = window.currentCalendarDate.daysInMonth();
+
+            // 빈 칸
+            for(let i=0; i<startDay; i++) {
+                calendarDays.innerHTML += `<div class="day-cell empty-cell"></div>`;
+            }
+            // 날짜 칸
+            for(let i=1; i<=daysInMonth; i++) {
+                const dateStr = window.currentCalendarDate.date(i).format('YYYY-MM-DD');
+                const dayData = window.allLedgerData.filter(d => d.date === dateStr);
+                const daySum = dayData.reduce((acc, cur) => acc + (Number(cur.amount)||0), 0);
+                
+                const div = document.createElement('div');
+                div.className = `day-cell ${dateStr === dayjs().format('YYYY-MM-DD') ? 'is-today' : ''}`;
+                div.innerHTML = `<div class="date-number">${i}</div>` + (daySum > 0 ? `<div class="total-amount">${daySum.toLocaleString()}</div>` : '');
+                div.onclick = () => openDayModal(dateStr, dayData);
+                calendarDays.appendChild(div);
+            }
+        }
+
+        window.renderLedgerList = (data) => {
+            const list = document.getElementById('general-ledger-list');
+            list.innerHTML = '';
+            data.sort((a,b) => new Date(b.date) - new Date(a.date));
+            data.forEach(d => {
+                const li = document.createElement('li');
+                li.className = 'flex justify-between p-2 bg-gray-50 rounded border';
+                li.innerHTML = `
+                    <div><span class="text-xs text-indigo-500 mr-2">${d.category}</span><span class="text-sm">${d.item}</span> <span class="text-xs text-gray-400">(${d.date.slice(5)})</span></div>
+                    <div class="flex items-center"><span class="font-bold text-red-500 mr-2">${Number(d.amount).toLocaleString()}</span><button class="text-gray-400 hover:text-red-500" onclick="deleteEntry('${d.id}', ${d.isPersonal})">×</button></div>
+                `;
+                list.appendChild(li);
+            });
+        }
+
+        // --- 데이터 조작 ---
+        window.deleteEntry = async (id, isPersonal) => {
+            if(!confirm('삭제하시겠습니까?')) return;
+            const { doc, deleteDoc, LEGACY_ENTRIES_PATH } = window.moduleExports;
+            const collectionName = isPersonal !== false ? `${window.moduleExports.USER_BASE_COLLECTION}/${currentUserId}/${window.moduleExports.ENTRIES_COLLECTION_NAME}` : LEGACY_ENTRIES_PATH;
+            try {
+                await deleteDoc(doc(db, collectionName, id));
+            } catch(e) { console.error(e); alert('삭제 실패'); }
+        };
+
+        window.addEntry = async (data) => {
+            const { addDoc, collection } = window.moduleExports;
+            // 항상 개인 경로에 저장
+            const path = `${window.moduleExports.USER_BASE_COLLECTION}/${currentUserId}/${window.moduleExports.ENTRIES_COLLECTION_NAME}`;
+            try {
+                await addDoc(collection(db, path), { ...data, timestamp: new Date().toISOString() });
+            } catch(e) { console.error(e); alert('저장 실패'); }
+        }
+
+        // --- UI 이벤트 및 모달 ---
+        document.getElementById('general-ledger-form').onsubmit = (e) => {
+            e.preventDefault();
+            const date = document.getElementById('gl-date').value;
+            const cat = document.getElementById('gl-category').value;
+            const item = document.getElementById('gl-item').value;
+            const amount = document.getElementById('gl-amount').value;
+            if(date && cat && item && amount) {
+                addEntry({ date, category: cat, item, amount: Number(amount) });
+                e.target.reset();
+                document.getElementById('gl-date').value = dayjs().format('YYYY-MM-DD');
+            }
+        };
+
+        window.openDayModal = (date, data) => {
+            document.getElementById('modal-date-title').textContent = date;
+            document.getElementById('modal-gl-date').value = date;
+            const list = document.getElementById('modal-detail-list');
+            list.innerHTML = '';
+            let sum = 0;
+            data.forEach(d => {
+                sum += Number(d.amount);
+                list.innerHTML += `<li class="flex justify-between p-2 border-b"><span>${d.item} <small class="text-gray-500">(${d.category})</small></span><span><b class="text-red-500">${Number(d.amount).toLocaleString()}</b> <button onclick="deleteEntry('${d.id}', ${d.isPersonal})" class="ml-2 text-gray-400">×</button></span></li>`;
+            });
+            document.getElementById('modal-total-sum').textContent = `합계: ${sum.toLocaleString()} 원`;
+            
+            const backdrop = document.getElementById('modal-backdrop');
+            backdrop.classList.remove('hidden');
+            backdrop.classList.add('flex');
+        };
+
+        window.closeModal = () => {
+            const backdrop = document.getElementById('modal-backdrop');
+            backdrop.classList.add('hidden');
+            backdrop.classList.remove('flex');
+        };
+
+        document.getElementById('modal-ledger-form').onsubmit = (e) => {
+            e.preventDefault();
+            const date = document.getElementById('modal-gl-date').value;
+            const cat = document.getElementById('modal-gl-category').value;
+            const item = document.getElementById('modal-gl-item').value;
+            const amount = document.getElementById('modal-gl-amount').value;
+             if(date && cat && item && amount) {
+                addEntry({ date, category: cat, item, amount: Number(amount) });
+                e.target.reset();
+                window.closeModal();
+            }
+        };
+
+        // 카테고리 관리 로직
+        window.openCategoryManager = () => {
+             window.renderCategoryManagementList();
+             const el = document.getElementById('category-modal-backdrop');
+             document.getElementById('category-management-ui').style.display = 'block';
+             document.getElementById('category-detail-view').style.display = 'none';
+             el.classList.remove('hidden'); el.classList.add('flex');
+        };
+
+        window.closeCategoryModal = () => {
+             const el = document.getElementById('category-modal-backdrop');
+             el.classList.add('hidden'); el.classList.remove('flex');
+        };
+        
+        window.renderCategoryManagementList = () => {
+            const list = document.getElementById('existing-categories-list');
+            list.innerHTML = window.categoryNames.map(n => 
+                `<div class="flex justify-between p-2 border-b bg-white"><span>${n}</span> <div><button onclick="modCat('${n}')" class="text-blue-500 mr-2 text-xs font-bold">수정</button><button onclick="delCat('${n}')" class="text-red-500 text-xs font-bold">삭제</button></div></div>`
+            ).join('');
+        };
+
+        window.showCategoryDetail = (name, data) => {
+            const el = document.getElementById('category-modal-backdrop');
+            document.getElementById('category-management-ui').style.display = 'none';
+            document.getElementById('category-detail-view').style.display = 'block';
+            const list = document.getElementById('category-detail-list');
+            list.innerHTML = data.map(d => `<li class="flex justify-between p-2 border-b"><span>${d.date} ${d.item}</span><span class="font-bold">${Number(d.amount).toLocaleString()}</span></li>`).join('');
+            el.classList.remove('hidden'); el.classList.add('flex');
+        };
+
+        document.getElementById('add-category-form').onsubmit = async (e) => {
+            e.preventDefault();
+            const val = document.getElementById('new-category-name').value.trim();
+            if(val && !window.categoryNames.includes(val)) {
+                const { setDoc, doc, CATEGORIES_COLLECTION_NAME, CATEGORIES_DOC_NAME, USER_BASE_COLLECTION } = window.moduleExports;
+                const newCats = [...window.categoryNames, val];
+                await setDoc(doc(db, `${USER_BASE_COLLECTION}/${currentUserId}/${CATEGORIES_COLLECTION_NAME}`, CATEGORIES_DOC_NAME), { names: newCats, userId: currentUserId });
+                document.getElementById('new-category-name').value = '';
+            }
+        };
+        
+        window.modCat = async (oldName) => {
+            const newName = prompt('새 이름:', oldName);
+            if(newName && newName !== oldName) {
+                 alert('카테고리 수정은 현재 카테고리 데이터 일관성 유지를 위해 지원되지 않습니다. 삭제 후 다시 추가해주세요.');
+            }
+        }
+        window.delCat = async (name) => {
+            if(confirm('삭제하시겠습니까?')) {
+                 const { setDoc, doc, CATEGORIES_COLLECTION_NAME, CATEGORIES_DOC_NAME, USER_BASE_COLLECTION } = window.moduleExports;
+                 const newCats = window.categoryNames.filter(n => n !== name);
+                 await setDoc(doc(db, `${USER_BASE_COLLECTION}/${currentUserId}/${CATEGORIES_COLLECTION_NAME}`, CATEGORIES_DOC_NAME), { names: newCats, userId: currentUserId });
+            }
+        }
+
+        // 달력 이동
+        document.getElementById('prev-month-btn').onclick = () => { currentCalendarDate = currentCalendarDate.subtract(1, 'month'); renderCalendar(); };
+        document.getElementById('next-month-btn').onclick = () => { currentCalendarDate = currentCalendarDate.add(1, 'month'); renderCalendar(); };
+        
+        // 초기 날짜
+        document.getElementById('gl-date').value = dayjs().format('YYYY-MM-DD');
+
     </script>
 </body>
 </html>
-```eof
