@@ -156,11 +156,6 @@
 
         // --- 렌더링 로직 ---
         window.renderCalendar = () => {
-            // ✅ 수정: currentCalendarDate가 유효한지 확인하고, 유효하지 않으면 dayjs()로 초기화
-            if (!window.currentCalendarDate || !window.currentCalendarDate.format) {
-                window.currentCalendarDate = dayjs();
-            }
-
             const displayMonth = window.currentCalendarDate.format('YYYY-MM');
             document.getElementById('current-month-display').textContent = window.currentCalendarDate.format('YYYY년 M월');
 
